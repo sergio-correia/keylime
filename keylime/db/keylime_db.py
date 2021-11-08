@@ -12,9 +12,29 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine.url import URL
 
 from keylime import config
+from keylime import json
 from keylime import keylime_logging
 
 logger = keylime_logging.init_logging('keylime_db')
+
+# JSON pickler that fulfills SQLAlchemy requirements, from
+# social-storage-sqlalchemy.
+# https://github.com/python-social-auth/social-storage-sqlalchemy/commit/39d129
+class JSONPickler:
+    """JSON pickler wrapper around json lib since SQLAlchemy invokes
+    dumps with extra positional parameters"""
+
+    @classmethod
+    def dumps(cls, value, *args, **kwargs):
+        #pylint: disable=unused-argument
+        """Dumps the python value into a JSON string"""
+        return json.dumps(value)
+
+    @classmethod
+    def loads(cls, value):
+        """Parses the JSON string and returns the corresponding python value"""
+        return json.loads(value)
+
 
 class DBEngineManager:
 
