@@ -35,4 +35,4 @@ else
     REPO_DIR="/root/keylime"
 fi
 chmod +x $REPO_DIR/test/run_tests.sh
-$REPO_DIR/test/run_tests.sh -s openssl
+$REPO_DIR/test/run_tests.sh -s openssl -c

@@ -17,9 +17,11 @@ TEST_LIST=`ls | grep "^test_.*\.py$"`
 # Command line params
 USER_MODE=0
 UMODE_OPT=""
-COVERAGE=0
-COVERAGE_DIR=`pwd`
-unset COVERAGE_FILE
+
+# Coverage.
+unset COVERAGE
+COVERAGE_ARGS=
+
 
 for opt in "$@"; do
   shift
@@ -33,9 +35,7 @@ while getopts ":cuhs:" opt; do
     case $opt in
         c)
             COVERAGE=1
-            export COVERAGE_DIR=`mktemp -d`
-            export COVERAGE_FILE=$COVERAGE_DIR/.coverage
-            echo "INFO: Using Coverage directory: $COVERAGE_DIR"
+            COVERAGE_ARGS="--run-coverage"
             ;;
         u)
             USER_MODE=1
@@ -182,34 +182,18 @@ if [ $? -ne 0 ]; then
 	exit 1
 fi
 
-# Run the tests as necessary
-if [[ "$COVERAGE" -eq "1" ]] ; then
-    # Coverage config file
-    echo -e "[run]\nsource = $KEYLIME_DIR/keylime\nomit = /usr/local/lib/,\"*/test/*\",$KEYLIME_DIR/keylime/test.py" > $COVERAGE_DIR/.coveragerc
+echo
+echo "=================================================================================="
+echo $'\t\t\tBegin Testing Phase'
+echo "=================================================================================="
+green -vv ${COVERAGE_ARGS}
 
-    echo
-    echo "=================================================================================="
-    echo $'\t\t\tBegin Testing Phase'
-    echo "=================================================================================="
-    for test in $TEST_LIST ; do
-        coverage run --rcfile=$COVERAGE_DIR/.coveragerc --parallel-mode $test
-    done
-
-    echo
-    echo "=================================================================================="
-    echo $'\t\t\tProcessing Coverage Reports'
-    echo "=================================================================================="
-    pushd $COVERAGE_DIR
-    coverage combine
-    coverage report
-    coverage html
-    popd 1>/dev/null
-else
-    # Do generic testing with no coverage
-    echo
-    echo "=================================================================================="
-    echo $'\t\t\tBegin Testing Phase'
-    echo "=================================================================================="
-    green -vv
-    exit $?
-fi
+[ -z "${COVERAGE}" ] && exit $?
+echo
+echo "=================================================================================="
+echo $'\t\t\tProcessing Coverage Reports'
+echo "=================================================================================="
+coverage combine
+coverage report
+coverage html
+exit $?

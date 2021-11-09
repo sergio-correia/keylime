@@ -21,6 +21,12 @@ jobs:
       uses: actions/checkout@v2
     - name: Run tests
       run: .ci/test_wrapper.sh
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v2
+      with:
+        name: coverage
+        verbose: true
+        override_branch: codecov
   lint:
     runs-on: ubuntu-latest
     container:
