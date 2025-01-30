@@ -1,11 +1,12 @@
 from keylime import config
 from keylime.web.base.server import Server
 from keylime.web.verifier.agent_controller import AgentController
-from keylime.web.verifier.mb_ref_state_controller import MBRefStateController
-from keylime.web.verifier.ima_policy_controller import IMAPolicyController
 from keylime.web.verifier.attestation_controller import AttestationController
 from keylime.web.verifier.evidence_controller import EvidenceController
+from keylime.web.verifier.ima_policy_controller import IMAPolicyController
+from keylime.web.verifier.mb_ref_state_controller import MBRefStateController
 from keylime.web.verifier.server_info_controller import ServerInfoController
+from keylime.web.verifier.session_contoller import SessionController
 
 
 class VerifierServer(Server):
@@ -13,7 +14,7 @@ class VerifierServer(Server):
         self._use_config("verifier")
         self._set_operating_mode(from_config="mode", fallback="push")
         self._set_bind_interface(from_config="ip")
-        self._set_http_port(value=None) # verifier does not accept insecure connections
+        self._set_http_port(value=None)  # verifier does not accept insecure connections
         self._set_https_port(from_config="port")
         self._set_max_upload_size(from_config="max_upload_size")
         self._set_default_ssl_ctx()
@@ -61,6 +62,8 @@ class VerifierServer(Server):
         self._v3_ima_routes()
         # Routes for on-demand verification of evidence in API v3+
         self._v3_evidence_routes()
+        # Routes for agent athentication
+        self._v3_authentication_routes()
 
     def _agent_routes(self):
         # Routes used to manage agents enrolled for verification
@@ -88,7 +91,9 @@ class VerifierServer(Server):
         self._get("/agents/:agent_id/attestations", AttestationController, "index", allow_insecure=True)
         self._post("/agents/:agent_id/attestations", AttestationController, "create", allow_insecure=True)
         self._get("/agents/:agent_id/attestations/latest", AttestationController, "show_latest", allow_insecure=True)
-        self._patch("/agents/:agent_id/attestations/latest", AttestationController, "update_latest", allow_insecure=True)
+        self._patch(
+            "/agents/:agent_id/attestations/latest", AttestationController, "update_latest", allow_insecure=True
+        )
         self._get("/agents/:agent_id/attestations/:index", AttestationController, "show", allow_insecure=True)
         self._patch("/agents/:agent_id/attestations/:index", AttestationController, "update", allow_insecure=True)
 
@@ -133,3 +138,11 @@ class VerifierServer(Server):
     def _v3_evidence_routes(self):
         # Routes for on-demand verification of evidence (which adhere to RFC 9110 semantics)
         self._post("/evidence", EvidenceController, "process")
+
+    def _v3_authentication_routes(self):
+        # Routes for agent authentication
+        self._get("/agents/:agent_id/session/:token", SessionController, "show", allow_insecure=True)
+        self._post("/agents/:agent_id/session", SessionController, "create", allow_insecure=True)
+        self._patch("/agents/:agent_id/session/:token", SessionController, "update", allow_insecure=True)
+
+        # TODO: Remove "allow_insecure" above
