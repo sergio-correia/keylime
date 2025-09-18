@@ -203,3 +203,187 @@ class SharedDataManager:
     def manager(self) -> mp.Manager:
         """Access to the underlying multiprocessing Manager for advanced usage."""
         return self._manager
+
+
+# Global shared memory manager instance
+_global_shared_manager: Optional[SharedDataManager] = None
+_manager_lock = threading.Lock()
+
+
+def get_shared_memory() -> SharedDataManager:
+    """Get the global shared memory manager instance.
+
+    This function returns a singleton SharedDataManager that can be used
+    throughout keylime for caching and inter-process communication.
+
+    The manager is automatically initialized on first access and cleaned up
+    on process exit.
+
+    Returns:
+        SharedDataManager: The global shared memory manager instance
+    """
+    global _global_shared_manager
+
+    if _global_shared_manager is None:
+        with _manager_lock:
+            if _global_shared_manager is None:
+                logger.info("Initializing global shared memory manager")
+                _global_shared_manager = SharedDataManager()
+                logger.info("Global shared memory manager initialized")
+
+    return _global_shared_manager
+
+
+def cleanup_global_shared_memory() -> None:
+    """Cleanup the global shared memory manager.
+
+    This is automatically called on exit but can be called manually.
+    """
+    global _global_shared_manager
+
+    if _global_shared_manager is not None:
+        logger.info("Cleaning up global shared memory manager")
+        _global_shared_manager.cleanup()
+        _global_shared_manager = None
+
+
+# Convenience functions for common keylime patterns
+
+
+def cache_policy(agent_id: str, checksum: str, policy: str) -> None:
+    """Cache a policy in shared memory.
+
+    Args:
+        agent_id: The agent identifier
+        checksum: The policy checksum
+        policy: The policy content to cache
+    """
+    manager = get_shared_memory()
+    policy_cache = manager.get_or_create_dict("policy_cache")
+
+    if agent_id not in policy_cache:
+        policy_cache[agent_id] = manager.manager.dict()
+
+    policy_cache[agent_id][checksum] = policy
+    logger.debug("Cached policy for agent %s with checksum %s", agent_id, checksum)
+
+
+def get_cached_policy(agent_id: str, checksum: str) -> Optional[str]:
+    """Retrieve cached policy.
+
+    Args:
+        agent_id: The agent identifier
+        checksum: The policy checksum
+
+    Returns:
+        The cached policy content or None if not found
+    """
+    manager = get_shared_memory()
+    policy_cache = manager.get_or_create_dict("policy_cache")
+    agent_policies = policy_cache.get(agent_id, {})
+
+    result = agent_policies.get(checksum)
+    if result:
+        logger.debug("Found cached policy for agent %s with checksum %s", agent_id, checksum)
+    else:
+        logger.debug("No cached policy found for agent %s with checksum %s", agent_id, checksum)
+
+    return result
+
+
+def clear_agent_policy_cache(agent_id: str) -> None:
+    """Clear all cached policies for an agent.
+
+    Args:
+        agent_id: The agent identifier
+    """
+    manager = get_shared_memory()
+    policy_cache = manager.get_or_create_dict("policy_cache")
+
+    if agent_id in policy_cache:
+        del policy_cache[agent_id]
+        logger.debug("Cleared policy cache for agent %s", agent_id)
+
+
+def cleanup_agent_policy_cache(agent_id: str, keep_checksum: str = "") -> None:
+    """Clean up agent policy cache, keeping only the specified checksum.
+
+    This mimics the cleanup behavior from GLOBAL_POLICY_CACHE where when
+    a new policy checksum is encountered, old cached policies are removed.
+
+    Args:
+        agent_id: The agent identifier
+        keep_checksum: The checksum to keep in the cache (empty string by default)
+    """
+    manager = get_shared_memory()
+    policy_cache = manager.get_or_create_dict("policy_cache")
+
+    if agent_id in policy_cache and len(policy_cache[agent_id]) > 1:
+        # Keep only the empty entry and the specified checksum
+        old_policies = dict(policy_cache[agent_id])
+        policy_cache[agent_id] = manager.manager.dict()
+
+        # Always keep the empty entry
+        policy_cache[agent_id][""] = old_policies.get("", "")
+
+        # Keep the specified checksum if it exists and is not empty
+        if keep_checksum and keep_checksum in old_policies:
+            policy_cache[agent_id][keep_checksum] = old_policies[keep_checksum]
+
+        logger.debug("Cleaned up policy cache for agent %s, keeping checksum %s", agent_id, keep_checksum)
+
+
+def initialize_agent_policy_cache(agent_id: str) -> Dict[str, Any]:
+    """Initialize policy cache for an agent if it doesn't exist.
+
+    Args:
+        agent_id: The agent identifier
+
+    Returns:
+        The agent's policy cache dictionary
+    """
+    manager = get_shared_memory()
+    policy_cache = manager.get_or_create_dict("policy_cache")
+
+    if agent_id not in policy_cache:
+        policy_cache[agent_id] = manager.manager.dict()
+        policy_cache[agent_id][""] = ""
+        logger.debug("Initialized policy cache for agent %s", agent_id)
+
+    return policy_cache[agent_id]
+
+
+def get_agent_cache(agent_id: str) -> Dict[str, Any]:
+    """Get shared cache for a specific agent.
+
+    Args:
+        agent_id: The agent identifier
+
+    Returns:
+        A shared dictionary for caching agent-specific data
+    """
+    manager = get_shared_memory()
+    return manager.get_or_create_dict(f"agent_cache:{agent_id}")
+
+
+def get_verification_queue(agent_id: str) -> List[Any]:
+    """Get verification queue for batching database operations.
+
+    Args:
+        agent_id: The agent identifier
+
+    Returns:
+        A shared list for queuing verification operations
+    """
+    manager = get_shared_memory()
+    return manager.get_or_create_list(f"verification_queue:{agent_id}")
+
+
+def get_shared_stats() -> Dict[str, Any]:
+    """Get statistics about shared memory usage.
+
+    Returns:
+        Dictionary containing storage statistics
+    """
+    manager = get_shared_memory()
+    return manager.get_stats()
