@@ -41,6 +41,13 @@ from keylime.db.verifier_db import VerfierMain, VerifierAllowlist, VerifierMbpol
 from keylime.failure import MAX_SEVERITY_LABEL, Component, Event, Failure, set_severity_config
 from keylime.ima import ima
 from keylime.mba import mba
+from keylime.shared_data import (
+    cache_policy,
+    cleanup_agent_policy_cache,
+    clear_agent_policy_cache,
+    get_cached_policy,
+    initialize_agent_policy_cache,
+)
 from keylime.tee import snp
 
 try:
@@ -51,7 +58,7 @@ except RuntimeError:
 
 logger = keylime_logging.init_logging("verifier")
 
-GLOBAL_POLICY_CACHE: Dict[str, Dict[str, str]] = {}
+# GLOBAL_POLICY_CACHE: Dict[str, Dict[str, str]] = {}  # Replaced with shared memory
 
 set_severity_config(config.getlist("verifier", "severity_labels"), config.getlist("verifier", "severity_policy"))
 
@@ -149,44 +156,41 @@ def _from_db_obj(agent_db_obj: VerfierMain) -> Dict[str, Any]:
     return agent_dict
 
 
-def verifier_read_policy_from_cache(ima_policy_data: Dict[str, str]) -> str:
-    checksum = ima_policy_data.get("checksum", "")
-    name = ima_policy_data.get("name", "empty")
-    agent_id = ima_policy_data.get("agent_id", "")
+def verifier_read_policy_from_cache(stored_agent: VerfierMain) -> str:
+    checksum = ""
+    name = "empty"
+    agent_id = str(stored_agent.agent_id)
 
-    if not agent_id:
-        return ""
+    # Initialize agent policy cache if it doesn't exist
+    initialize_agent_policy_cache(agent_id)
 
-    if agent_id not in GLOBAL_POLICY_CACHE:
-        GLOBAL_POLICY_CACHE[agent_id] = {}
-        GLOBAL_POLICY_CACHE[agent_id][""] = ""
+    if stored_agent.ima_policy:
+        checksum = str(stored_agent.ima_policy.checksum)
+        name = stored_agent.ima_policy.name
 
-    if checksum not in GLOBAL_POLICY_CACHE[agent_id]:
-        if len(GLOBAL_POLICY_CACHE[agent_id]) > 1:
-            # Perform a cleanup of the contents, IMA policy checksum changed
-            logger.debug(
-                "Cleaning up policy cache for policy named %s, with checksum %s, used by agent %s",
-                name,
-                checksum,
-                agent_id,
-            )
+    # Check if policy is already cached
+    cached_policy = get_cached_policy(agent_id, checksum)
+    if cached_policy is not None:
+        return cached_policy
 
-            GLOBAL_POLICY_CACHE[agent_id] = {}
-            GLOBAL_POLICY_CACHE[agent_id][""] = ""
+    # Policy not cached, need to clean up and load from database
+    cleanup_agent_policy_cache(agent_id, checksum)
 
-        logger.debug(
-            "IMA policy named %s, with checksum %s, used by agent %s is not present on policy cache on this verifier, performing SQLAlchemy load",
-            name,
-            checksum,
-            agent_id,
-        )
+    logger.debug(
+        "IMA policy named %s, with checksum %s, used by agent %s is not present on policy cache on this verifier, performing SQLAlchemy load",
+        name,
+        checksum,
+        agent_id,
+    )
 
-        # Get the large ima_policy content - it's already loaded in ima_policy_data
-        ima_policy = ima_policy_data.get("ima_policy", "")
-        assert isinstance(ima_policy, str)
-        GLOBAL_POLICY_CACHE[agent_id][checksum] = ima_policy
+    # Actually contacts the database and load the (large) ima_policy column for "allowlists" table
+    ima_policy = stored_agent.ima_policy.ima_policy
+    assert isinstance(ima_policy, str)
 
-    return GLOBAL_POLICY_CACHE[agent_id][checksum]
+    # Cache the policy for future use
+    cache_policy(agent_id, checksum, ima_policy)
+
+    return ima_policy
 
 
 def verifier_db_delete_agent(session: Session, agent_id: str) -> None:
@@ -576,7 +580,7 @@ class AgentsHandler(BaseHandler):
                         "attestation_count": 0,
                         "last_received_quote": 0,
                         "last_successful_attestation": 0,
-                        "accept_attestations": True
+                        "accept_attestations": True,
                     }
 
                     if "verifier_ip" in json_body:
@@ -597,7 +601,7 @@ class AgentsHandler(BaseHandler):
                             agent_data["supported_version"] != "1.0",
                             agent_mtls_cert_enabled,
                             (agent_data["mtls_cert"] is None or agent_data["mtls_cert"] == "disabled"),
-                            mode == "pull"
+                            mode == "pull",
                         ]
                     ):
                         web_util.echo_json_response(self.req_handler, 400, "mTLS certificate for agent is required!")
@@ -1293,7 +1297,9 @@ class MbpolicyHandler(BaseHandler):
                 try:
                     mbpolicy = session.query(VerifierMbpolicy).filter_by(name=mb_policy_name).one()
                 except NoResultFound:
-                    web_util.echo_json_response(self.req_handler, 404, f"Measured boot policy {mb_policy_name} not found")
+                    web_util.echo_json_response(
+                        self.req_handler, 404, f"Measured boot policy {mb_policy_name} not found"
+                    )
                     return
                 except SQLAlchemyError as e:
                     logger.error("SQLAlchemy Error: %s", e)
@@ -1538,7 +1544,9 @@ class VerifyEvidenceHandler(BaseHandler):
             # TODO - should we use different error codes for attestation failures even if we processed correctly?
             web_util.echo_json_response(self.req_handler, 200, "Success", attestation_response)
         except Exception:
-            web_util.echo_json_response(self.req_handler, 500, "Internal Server Error: Failed to process attestation data")
+            web_util.echo_json_response(
+                self.req_handler, 500, "Internal Server Error: Failed to process attestation data"
+            )
 
     def _tpm_verify(self, json_body: dict[str, Any]) -> Failure:
         quote = None
