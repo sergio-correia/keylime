@@ -39,10 +39,17 @@ from keylime.db.verifier_db import VerfierMain, VerifierAllowlist, VerifierMbpol
 from keylime.failure import MAX_SEVERITY_LABEL, Component, Event, Failure, set_severity_config
 from keylime.ima import ima
 from keylime.mba import mba
+from keylime.shared_data import (
+    cache_policy,
+    cleanup_agent_policy_cache,
+    clear_agent_policy_cache,
+    get_cached_policy,
+    initialize_agent_policy_cache,
+)
 
 logger = keylime_logging.init_logging("verifier")
 
-GLOBAL_POLICY_CACHE: Dict[str, Dict[str, str]] = {}
+# GLOBAL_POLICY_CACHE: Dict[str, Dict[str, str]] = {}  # Replaced with shared memory
 
 set_severity_config(config.getlist("verifier", "severity_labels"), config.getlist("verifier", "severity_policy"))
 
@@ -135,39 +142,36 @@ def verifier_read_policy_from_cache(stored_agent: VerfierMain) -> str:
     name = "empty"
     agent_id = str(stored_agent.agent_id)
 
-    if agent_id not in GLOBAL_POLICY_CACHE:
-        GLOBAL_POLICY_CACHE[agent_id] = {}
-        GLOBAL_POLICY_CACHE[agent_id][""] = ""
+    # Initialize agent policy cache if it doesn't exist
+    initialize_agent_policy_cache(agent_id)
 
     if stored_agent.ima_policy:
         checksum = str(stored_agent.ima_policy.checksum)
         name = stored_agent.ima_policy.name
 
-    if checksum not in GLOBAL_POLICY_CACHE[agent_id]:
-        if len(GLOBAL_POLICY_CACHE[agent_id]) > 1:
-            # Perform a cleanup of the contents, IMA policy checksum changed
-            logger.debug(
-                "Cleaning up policy cache for policy named %s, with checksum %s, used by agent %s",
-                name,
-                checksum,
-                agent_id,
-            )
+    # Check if policy is already cached
+    cached_policy = get_cached_policy(agent_id, checksum)
+    if cached_policy is not None:
+        return cached_policy
 
-            GLOBAL_POLICY_CACHE[agent_id] = {}
-            GLOBAL_POLICY_CACHE[agent_id][""] = ""
+    # Policy not cached, need to clean up and load from database
+    cleanup_agent_policy_cache(agent_id, checksum)
 
-        logger.debug(
-            "IMA policy named %s, with checksum %s, used by agent %s is not present on policy cache on this verifier, performing SQLAlchemy load",
-            name,
-            checksum,
-            agent_id,
-        )
-        # Actually contacts the database and load the (large) ima_policy column for "allowlists" table
-        ima_policy = stored_agent.ima_policy.ima_policy
-        assert isinstance(ima_policy, str)
-        GLOBAL_POLICY_CACHE[agent_id][checksum] = ima_policy
+    logger.debug(
+        "IMA policy named %s, with checksum %s, used by agent %s is not present on policy cache on this verifier, performing SQLAlchemy load",
+        name,
+        checksum,
+        agent_id,
+    )
 
-    return GLOBAL_POLICY_CACHE[agent_id][checksum]
+    # Actually contacts the database and load the (large) ima_policy column for "allowlists" table
+    ima_policy = stored_agent.ima_policy.ima_policy
+    assert isinstance(ima_policy, str)
+
+    # Cache the policy for future use
+    cache_policy(agent_id, checksum, ima_policy)
+
+    return ima_policy
 
 
 def verifier_db_delete_agent(session: Session, agent_id: str) -> None:
@@ -1043,7 +1047,9 @@ class AllowlistHandler(BaseHandler):
         try:
             runtime_policy_count = session.query(VerifierAllowlist).filter_by(name=runtime_policy_name).count()
             if runtime_policy_count > 0:
-                web_util.echo_json_response(self.req_handler, 409, f"Runtime policy with name {runtime_policy_name} already exists")
+                web_util.echo_json_response(
+                    self.req_handler, 409, f"Runtime policy with name {runtime_policy_name} already exists"
+                )
                 logger.warning("Runtime policy with name %s already exists", runtime_policy_name)
                 return
         except SQLAlchemyError as e:
