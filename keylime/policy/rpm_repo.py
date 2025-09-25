@@ -318,7 +318,7 @@ def _analyze_remote_repo(
     # single thread (asyncio) or multiple process.  To avoid change
     # all the stack, I go for synchronous functions but with many
     # process.  In the future we can move all to asyncio.
-    jobs = jobs if jobs else (multiprocessing.cpu_count() * 8)
+    jobs = jobs if jobs else max(8, multiprocessing.cpu_count())
 
     # Analyze all the RPMs in parallel
     with multiprocessing.Pool(jobs) as pool:
