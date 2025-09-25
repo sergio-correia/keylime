@@ -108,8 +108,12 @@ def verify(
     """Do signature verification with the given public key"""
     if isinstance(pubkey, RSAPublicKey):
         if sigalg == tpm2_objects.TPM_ALG_RSAPSS:
+            # Use MAX_LENGTH to accept any valid salt length during verification.
             pubkey.verify(
-                sig, digest, padding.PSS(mgf=padding.MGF1(hashfunc), salt_length=saltlen), Prehashed(hashfunc)
+                sig,
+                digest,
+                padding.PSS(mgf=padding.MGF1(hashfunc), salt_length=padding.PSS.MAX_LENGTH),
+                Prehashed(hashfunc),
             )
         elif sigalg == tpm2_objects.TPM_ALG_RSASSA:
             pubkey.verify(sig, digest, padding.PKCS1v15(), Prehashed(hashfunc))
@@ -308,12 +312,12 @@ def checkquote(
     if not isinstance(pubkey, (RSAPublicKey, EllipticCurvePublicKey)):
         raise ValueError(f"Unsupported key type {type(pubkey).__name__}")
 
-    if isinstance(pubkey, RSAPublicKey) and sig_alg not in [tpm2_objects.TPM_ALG_RSASSA]:
+    if isinstance(pubkey, RSAPublicKey) and sig_alg not in [tpm2_objects.TPM_ALG_RSASSA, tpm2_objects.TPM_ALG_RSAPSS]:
         raise ValueError(f"Unsupported quote signature algorithm '{sig_alg:#x}' for RSA keys")
     if isinstance(pubkey, EllipticCurvePublicKey) and sig_alg not in [tpm2_objects.TPM_ALG_ECDSA]:
         raise ValueError(f"Unsupported quote signature algorithm '{sig_alg:#x}' for EC keys")
 
-    if sig_alg in [tpm2_objects.TPM_ALG_RSASSA]:
+    if sig_alg in [tpm2_objects.TPM_ALG_RSASSA, tpm2_objects.TPM_ALG_RSAPSS]:
         (sig_size,) = struct.unpack_from(">H", sigblob, 4)
         (signature,) = struct.unpack_from(f"{sig_size}s", sigblob, 6)
     elif sig_alg in [tpm2_objects.TPM_ALG_ECDSA]:
@@ -333,7 +337,7 @@ def checkquote(
     digest.update(quoteblob)
     quote_digest = digest.finalize()
 
-    verify(pubkey, signature, quote_digest, hashfunc)
+    verify(pubkey, signature, quote_digest, hashfunc, sig_alg)
 
     # Check that reported nonce is expected one
     retDict = tpm2_objects.unmarshal_tpms_attest(quoteblob)
