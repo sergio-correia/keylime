@@ -15,7 +15,8 @@ from keylime.tpm.tpm_util import checkquote, makecredential
 
 
 class TestTpmUtil(unittest.TestCase):
-    def test_checkquote(self) -> None:
+    def test_checkquote_rsa_ssa(self) -> None:
+        """Test checkquote with RSA-SSA (PKCS#1 v1.5) signature"""
         aikblob = bytes(
             "-----BEGIN PUBLIC KEY-----\n"
             "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw3owm7uitOaspMCDlhEv\n"
@@ -80,6 +81,70 @@ class TestTpmUtil(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             checkquote(aikblob, nonce, sigblob, quoteblob, pcrblob, "sha1")
+
+    def test_checkquote_rsa_pss(self) -> None:
+        """Test checkquote with RSA-PSS signature from hardware TPM"""
+        aikblob = base64.b64decode(
+            "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dL"
+            "Q0FRRUF6TldkaFVJVHMwd2tiaDJUcnF5eQpEV0lVWG02NUZ6ZlNDMGtRQlVrckRhb0Y2NWlGUFMrU0NNTkl4cHZH"
+            "TlZiRmRhcXVrRElpR3JRelBFcHlYRC9nCjdPZnhwc0RYV0pLU2NLNGZQRkNnY1lQMWthZ21sNWl2aG9Tb3diL3E5"
+            "WHhDU2dpdURwai9hZXhIS2I3U2hXNVoKWXp4bXUzY1lQb2EvdmdBZU9XYUNHV251aGxabGlEdE9sUmVNazhuZXNZ"
+            "aUc4OFlkUE9ZeGNCUzZiOEhmUE5KMgozSGxVR2ZOUU51MTN2ZGR2T2cxU2tBelZ6dDdndGFYK2tmM01odUluNzJS"
+            "MjA5MEFyVyt4VUZnZ0pCcGlRbk9MCndrL1lScGtoNCs4SFdhSWxEYzYrZlU2ckx0ZTVubEhUVXZjdEF6WlNndWZh"
+            "SWxnclkya0pHcnhKMEd2N2hJdmUKVVFJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
+        )
+        sigblob = base64.b64decode(
+            "ABYACwEAvpS6MScd9ndsXEEmlYmTgJpXO6Laj7MMGj9/NqTbSZtwR2hMNSYxxKlqYxo5LK6yn9n9J+GT1+kw6K5h"
+            "lHe+04EhuKRJmKFByhDyMB0Wbcyx+//GRqX4QYyd8IjE17496+gJ4DB+7o7milzOCyzSGVI5O+S5FtCGqiOJObr7"
+            "TV3VpHIxUAIryN9+it0hPM5nkRrPwjE/KtqxZNOM2leBrPMpipqXVzx0CXlFh203KFfThs3LEHxvzawRj7kj/p1r"
+            "gWmZJdNvsvopLwZs1raNOy7Syaed45Pxee/o8a613nAmhYBLlussurPzTia59zhv5+HlWAvuQzyP3rG3WHIhQg=="
+        )
+        quoteblob = base64.b64decode(
+            "/1RDR4AYACIAC2cZhonUDKEv/wlm0Zs8iezs8j2rs1CfkMaaT385sV2OABJSc2FQc3NUZXN0Tm9uY2UxMjMAAAAC"
+            "j5IeCQAAAOoAAAABAQABAQIAAAAAAAAAAQALAwAEAAAg1iEtFTnnPUcxCDgEKoILux7ErOwjRqzj+KDANxYmgWc="
+        )
+        pcrblob = base64.b64decode(
+            "AQAAAAsAAwAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AQAAAAEAAAAgANq/OozYNVS9BOInkQzPe1CYFI4I1X7MvwBsZ/evZZyGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAA="
+        )
+        nonce = "RsaPssTestNonce123"
+
+        try:
+            checkquote(aikblob, nonce, sigblob, quoteblob, pcrblob, "sha256")
+        except Exception as e:
+            self.fail(f"RSA-PSS checkquote failed with {e}")
+
+        # test bad signature
+        bad_sigblob = bytearray(sigblob)
+        bad_sigblob[10] ^= 0x1
+        with self.assertRaises(InvalidSignature):
+            checkquote(aikblob, nonce, bytes(bad_sigblob), quoteblob, pcrblob, "sha256")
+
+        # test bad quoteblob
+        bad_quoteblob = bytearray(quoteblob)
+        bad_quoteblob[20] ^= 0x1
+        with self.assertRaises(InvalidSignature):
+            checkquote(aikblob, nonce, sigblob, bytes(bad_quoteblob), pcrblob, "sha256")
+
+        # test bad nonce
+        bad_nonce = "WrongNonce123"
+        with self.assertRaises(Exception):
+            checkquote(aikblob, bad_nonce, sigblob, quoteblob, pcrblob, "sha256")
+
+        # test bad pcrblob
+        bad_pcrblob = bytearray(pcrblob)
+        bad_pcrblob[150] ^= 0x1  # Corrupt a byte in the actual PCR value (not padding)
+        with self.assertRaises(Exception):
+            checkquote(aikblob, nonce, sigblob, quoteblob, bytes(bad_pcrblob), "sha256")
 
     @staticmethod
     def not_random(numbytes: int) -> bytes:
