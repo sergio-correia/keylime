@@ -1,12 +1,12 @@
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from keylime.models.verifier import AuthSession
-from keylime.web.base import Controller
-from keylime.db.verifier_db import VerfierMain
-
 from keylime import keylime_logging
 from keylime.db.keylime_db import DBEngineManager, SessionManager
+from keylime.db.verifier_db import VerfierMain
+from keylime.models.verifier import AuthSession
+from keylime.shared_data import get_shared_memory
+from keylime.web.base import Controller
 
 logger = keylime_logging.init_logging("verifier")
 
@@ -22,7 +22,120 @@ except SQLAlchemyError as err:
 def get_session() -> Session:
     return SessionManager().make_session(engine)
 
+
 class SessionController(Controller):
+    # POST /v3[.:minor]/sessions
+    def create_session(self, **params):
+        """Create a new authentication session.
+
+        This endpoint ALWAYS succeeds unless the request is malformed.
+        The session is stored in shared memory (not database) until PoP is verified.
+        Agent existence is checked during the PATCH (proof submission) step.
+        """
+        # Extract agent_id from request body
+        data = params.get("data", {})
+        attributes = data.get("attributes", {})
+        agent_id = attributes.get("agent_id")
+
+        if not agent_id:
+            self.respond(400, "Bad Request", {"errors": ["agent_id is required"]})
+            return
+
+        # Create session in memory (don't persist to DB yet)
+        auth_session = AuthSession.create_in_memory(agent_id, params)
+
+        if auth_session.get("errors"):
+            msgs = []
+            for field, errors in auth_session["errors"].items():
+                for error in errors:
+                    msgs.append(f"{field} {error}")
+            self.respond(400, "Bad Request", {"errors": msgs})
+            return
+
+        # Store in shared memory for access by other worker processes
+        shared_memory = get_shared_memory()
+        sessions_cache = shared_memory.get_or_create_dict("auth_sessions")
+        session_id = auth_session["session_id"]
+        sessions_cache[session_id] = auth_session
+
+        # Clean up stale sessions from shared memory
+        AuthSession.delete_stale_from_memory(agent_id)
+
+        # Send raw JSON-API response (not wrapped in {code, status, results})
+        self.send_response(status_code=200, body=auth_session["response"])
+
+    # PATCH /v3[.:minor]/sessions/:session_id
+    def update_session(self, session_id, **params):
+        """Update session with proof of possession.
+
+        Returns 404 if session doesn't exist in shared memory.
+        Returns 401 if authentication fails (invalid PoP or agent not enrolled).
+        Returns 200 with token on success, and persists to database.
+        """
+        # Extract agent_id from request body
+        data = params.get("data", {})
+        attributes = data.get("attributes", {})
+        agent_id = attributes.get("agent_id")
+
+        if not agent_id:
+            self.respond(400, "Bad Request", {"errors": ["agent_id is required"]})
+            return
+
+        # Retrieve session from shared memory
+        shared_memory = get_shared_memory()
+        sessions_cache = shared_memory.get_or_create_dict("auth_sessions")
+
+        # Convert session_id to int for lookup
+        try:
+            session_id_int = int(session_id)
+        except ValueError:
+            self.respond(404, "Not Found", {"errors": ["Invalid session ID"]})
+            return
+
+        auth_session_data = sessions_cache.get(session_id_int)
+
+        if not auth_session_data:
+            self.respond(404, "Not Found", {"errors": ["Session not found"]})
+            return
+
+        # Verify agent_id matches
+        if auth_session_data.get("agent_id") != agent_id:
+            self.respond(400, "Bad Request", {"errors": ["Agent ID mismatch"]})
+            return
+
+        # Check if agent exists - this is where we validate enrollment
+        session = get_session()
+        agent = session.query(VerfierMain).filter(VerfierMain.agent_id == agent_id).one_or_none()
+
+        if not agent:
+            # Delete from shared memory
+            del sessions_cache[session_id_int]
+            self.respond(401, "Unauthorized", {"errors": [f"Agent '{agent_id}' is not enrolled"]})
+            return
+
+        # Now persist to database and verify PoP
+        auth_session = AuthSession.create_from_memory(auth_session_data, agent, params)
+
+        if auth_session.errors:
+            msgs = []
+            for field, errors in auth_session.errors.items():
+                for error in errors:
+                    msgs.append(f"{field} {error}")
+            # Delete from shared memory on failure
+            del sessions_cache[session_id_int]
+            self.respond(401, "Unauthorized", {"errors": msgs})
+            return
+
+        # Persist to database
+        auth_session.commit_changes()
+
+        # Delete from shared memory after successful persistence
+        del sessions_cache[session_id_int]
+
+        # Send raw JSON-API response (not wrapped in {code, status, results})
+        response_data = {"data": auth_session.render(agent)}
+        self.send_response(status_code=200, body=response_data)
+
     # GET /v3[.:minor]/agents/:agent_id/session/:token
     def show(self, agent_id, token, **_params):
         AuthSession.delete_stale(agent_id)
@@ -47,7 +160,7 @@ class SessionController(Controller):
         if not agent:
             self.respond(404, "here")
             return
-        
+
         auth_session = AuthSession.create(agent, params)
 
         if auth_session.errors:
@@ -57,18 +170,18 @@ class SessionController(Controller):
                     msgs.append(f"{field} {error}")
             self.respond(400, "Bad Request", {"errors": msgs})
             return
-        
+
         AuthSession.delete_stale(agent_id)
 
         auth_session.commit_changes()
         self.respond(200, "Success", auth_session.render(agent))
-    
+
     def update(self, agent_id, token, **params):
         session = get_session()
         agent = session.query(VerfierMain).filter(VerfierMain.agent_id == agent_id).one_or_none()
 
         auth_session = AuthSession.get(agent_id=agent_id, token=token)
-        
+
         if not auth_session:
             self.respond(404)
             return
@@ -83,8 +196,8 @@ class SessionController(Controller):
             auth_session.delete()
             self.respond(401, "Unauthorized", {"errors": msgs})
             return
-        
-        #AuthSession.delete_stale(agent_id)
-        
+
+        # AuthSession.delete_stale(agent_id)
+
         auth_session.commit_changes()
         self.respond(200, "Succeses", auth_session.render(agent))
