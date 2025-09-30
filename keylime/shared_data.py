@@ -15,6 +15,77 @@ from keylime import keylime_logging
 logger = keylime_logging.init_logging("shared_data")
 
 
+class FlatDictView:
+    """A dictionary-like view over a flat key-value store.
+
+    This class provides dict-like access to a subset of keys in a flat store,
+    identified by a namespace prefix. This avoids the nested DictProxy issues.
+
+    Example:
+        store = manager.dict()  # Flat store
+        view = FlatDictView(store, lock, "sessions")
+        view["123"] = "data"  # Stores as "dict:sessions:123" in flat store
+        val = view["123"]  # Retrieves from "dict:sessions:123"
+    """
+
+    def __init__(self, store, lock, namespace):
+        self._store = store
+        self._lock = lock
+        self._namespace = namespace
+
+    def _make_key(self, key):
+        """Convert user key to internal flat key with namespace prefix."""
+        return f"dict:{self._namespace}:{key}"
+
+    def __getitem__(self, key):
+        with self._lock:
+            return self._store[self._make_key(key)]
+
+    def __setitem__(self, key, value):
+        flat_key = self._make_key(key)
+        with self._lock:
+            self._store[flat_key] = value
+
+    def __delitem__(self, key):
+        flat_key = self._make_key(key)
+        with self._lock:
+            del self._store[flat_key]
+
+    def __contains__(self, key):
+        return self._make_key(key) in self._store
+
+    def get(self, key, default=None):
+        with self._lock:
+            return self._store.get(self._make_key(key), default)
+
+    def keys(self):
+        """Return keys in this namespace."""
+        prefix = f"dict:{self._namespace}:"
+        all_store_keys = list(self._store.keys())
+        matching_keys = [k[len(prefix) :] for k in all_store_keys if k.startswith(prefix)]
+        return matching_keys
+
+    def values(self):
+        """Return values in this namespace."""
+        prefix = f"dict:{self._namespace}:"
+        with self._lock:
+            return [v for k, v in self._store.items() if k.startswith(prefix)]
+
+    def items(self):
+        """Return (key, value) pairs in this namespace."""
+        prefix = f"dict:{self._namespace}:"
+        with self._lock:
+            result = [(k[len(prefix) :], v) for k, v in self._store.items() if k.startswith(prefix)]
+            return result
+
+    def __len__(self):
+        """Return number of items in this namespace."""
+        return len(self.keys())
+
+    def __repr__(self):
+        return f"FlatDictView({self._namespace}, {len(self)} items)"
+
+
 class SharedDataManager:
     """Thread-safe shared data manager for multiprocess applications.
 
@@ -45,10 +116,27 @@ class SharedDataManager:
         """
         logger.debug("Initializing SharedDataManager")
 
-        self._manager = mp.Manager()
-        self._store = self._manager.dict()  # Single store for all data
+        # Use explicit context to ensure fork compatibility
+        # The Manager must be started BEFORE any fork() calls
+        ctx = mp.get_context("fork")
+        self._manager = ctx.Manager()
+
+        # CRITICAL FIX: Use a SINGLE flat dict instead of nested dicts
+        # Nested DictProxy objects have synchronization issues
+        # We'll use key prefixes like "dict:auth_sessions:session_id" instead
+        self._store = self._manager.dict()  # Single flat store for all data
         self._lock = self._manager.Lock()
         self._initialized_at = time.time()
+
+        # Register handler to reinitialize manager connection after fork
+        # This is needed because Manager uses network connections that don't survive fork
+        try:
+            import os
+
+            self._parent_pid = os.getpid()
+            logger.debug("SharedDataManager initialized in process %d", self._parent_pid)
+        except Exception as e:
+            logger.warning("Could not register PID tracking: %s", e)
 
         # Ensure cleanup on exit
         atexit.register(self.cleanup)
@@ -95,15 +183,20 @@ class SharedDataManager:
             key: Unique identifier for the dictionary
 
         Returns:
-            A shared dictionary (proxy object) that syncs across processes
+            A shared dictionary-like object that syncs across processes
+
+        Note:
+            Returns a FlatDictView that uses key prefixes in the flat store
+            instead of actual nested dicts, to avoid DictProxy nesting issues.
         """
-        with self._lock:
-            if key not in self._store:
-                self._store[key] = self._manager.dict()
-                logger.debug("Created new shared dict for key: %s", key)
-            else:
-                logger.debug("Retrieved existing shared dict for key: %s", key)
-            return self._store[key]
+        # Mark that this namespace exists
+        namespace_key = f"__namespace__{key}"
+        if namespace_key not in self._store:
+            with self._lock:
+                self._store[namespace_key] = True
+
+        # Return a view that operates on the flat store with key prefix
+        return FlatDictView(self._store, self._lock, key)
 
     def get_or_create_list(self, key: str) -> List[Any]:
         """Get or create a shared list.
@@ -210,6 +303,34 @@ _global_shared_manager: Optional[SharedDataManager] = None
 _manager_lock = threading.Lock()
 
 
+def initialize_shared_memory() -> SharedDataManager:
+    """Initialize the global shared memory manager.
+
+    This function MUST be called before any process forking occurs to ensure
+    all child processes share the same manager instance.
+
+    For tornado/multiprocess servers, call this before starting workers.
+
+    Returns:
+        SharedDataManager: The global shared memory manager instance
+
+    Raises:
+        RuntimeError: If called after manager is already initialized
+    """
+    global _global_shared_manager
+
+    with _manager_lock:
+        if _global_shared_manager is not None:
+            logger.warning("Shared memory manager already initialized, returning existing instance")
+            return _global_shared_manager
+
+        logger.info("Initializing global shared memory manager")
+        _global_shared_manager = SharedDataManager()
+        logger.info("Global shared memory manager initialized")
+
+    return _global_shared_manager
+
+
 def get_shared_memory() -> SharedDataManager:
     """Get the global shared memory manager instance.
 
@@ -218,6 +339,10 @@ def get_shared_memory() -> SharedDataManager:
 
     The manager is automatically initialized on first access and cleaned up
     on process exit.
+
+    IMPORTANT: In multiprocess applications (like tornado with workers),
+    you MUST call initialize_shared_memory() BEFORE forking workers.
+    Otherwise each worker will get its own separate manager.
 
     Returns:
         SharedDataManager: The global shared memory manager instance

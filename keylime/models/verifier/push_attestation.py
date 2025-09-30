@@ -3,13 +3,13 @@ import json
 from datetime import timedelta
 from typing import Any, Optional
 
+import keylime.models.verifier as verifier_models
 from keylime import config, keylime_logging
 from keylime.agentstates import AgentAttestState, TPMState
 from keylime.common import algorithms
 from keylime.failure import Component, Failure
 from keylime.ima import file_signatures, ima
 from keylime.models.base import *
-import keylime.models.verifier as verifier_models
 from keylime.tpm.tpm_main import Tpm
 
 logger = keylime_logging.init_logging("verifier")
@@ -27,7 +27,7 @@ def get_tpm_instance() -> Tpm:
 class PushAttestation(PersistableModel):
     """A PushAttestation instance is used to manage state over the lifetime of an attestation when the verifier is
     operating in push mode. This is necessary as a single push attestation is performed over multiple HTTP requests.
-    
+
     When the push attestation protocol starts, the verifier receives a list of capabilities of the agent system and
     uses these to select appropriate attestation parameters. This includes generating a nonce to ensure freshness of
     the attestation. The agent prepares evidence based on the nonce and the attestation parameters chosen by the
@@ -300,7 +300,7 @@ class PushAttestation(PersistableModel):
             self.nonce = Nonce.generate(128)
 
     def _set_timestamps(self):
-        nonce_lifetime = config.getint("verifier", "nonce_lifetime")
+        nonce_lifetime = config.getint("verifier", "nonce_lifetime", fallback=60)
 
         if self.changes.get("nonce"):
             self.nonce_created_at = Timestamp.now()

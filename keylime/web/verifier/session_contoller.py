@@ -95,6 +95,9 @@ class SessionController(Controller):
         auth_session_data = sessions_cache.get(session_id_int)
 
         if not auth_session_data:
+            logger.error(
+                "Session %d not found in cache. Available sessions: %s", session_id_int, list(sessions_cache.keys())
+            )
             self.respond(404, "Not Found", {"errors": ["Session not found"]})
             return
 
