@@ -92,7 +92,7 @@ class AuthSession(PersistableModel):
 
         # Generate nonce
         nonce = Nonce.generate(128)
-        nonce_lifetime = config.getint("verifier", "nonce_lifetime")
+        nonce_lifetime = config.getint("verifier", "nonce_lifetime", fallback=60)
         now = Timestamp.now()
         nonce_expires_at = now + timedelta(seconds=nonce_lifetime)
 
@@ -157,6 +157,10 @@ class AuthSession(PersistableModel):
     @classmethod
     def delete_stale_from_memory(cls, agent_id):
         """Delete stale sessions from shared memory for an agent."""
+        from keylime import keylime_logging
+
+        logger = keylime_logging.init_logging("verifier")
+
         shared_memory = get_shared_memory()
         sessions_cache = shared_memory.get_or_create_dict("auth_sessions")
 
@@ -295,7 +299,7 @@ class AuthSession(PersistableModel):
             )
 
     def _set_timestamps(self):
-        nonce_lifetime = config.getint("verifier", "nonce_lifetime")
+        nonce_lifetime = config.getint("verifier", "nonce_lifetime", fallback=60)
 
         if self.changes.get("nonce"):
             self.nonce_created_at = Timestamp.now()
