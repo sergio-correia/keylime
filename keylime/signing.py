@@ -2,10 +2,28 @@ import base64
 import hashlib
 import json
 import os
-import tempfile
 from typing import Optional, Union
 
-import gpg
+try:
+    import pysequoia
+
+    HAS_PYSEQUOIA = True
+except ImportError:
+    HAS_PYSEQUOIA = False
+
+try:
+    import gpg
+
+    HAS_GPG = True
+except ImportError:
+    HAS_GPG = False
+
+if not HAS_PYSEQUOIA and not HAS_GPG:
+    raise ImportError(
+        "No PGP signature verification implementation available. "
+        "Please install either 'pysequoia' (recommended) or 'pygpgme' to verify PGP signatures."
+    )
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -48,6 +66,40 @@ def verify_signature_from_file(
         )
 
 
+def _verify_pgp_signature_pysequoia(key: bytes, sig: bytes, body: bytes) -> bool:
+    """Verify PGP signature using pysequoia."""
+    logger.debug("Verifying PGP signature using pysequoia")
+    cert = pysequoia.Cert.from_bytes(key)
+    signature = pysequoia.Sig.from_bytes(sig)
+
+    def cert_store(fpr):
+        return [cert]
+
+    pysequoia.verify(bytes=body, signature=signature, store=cert_store)
+    logger.debug("Signature verification successful using pysequoia")
+    return True
+
+
+def _verify_pgp_signature_gpg(key: bytes, sig: bytes, body: bytes) -> bool:
+    """Verify PGP signature using gpg."""
+    logger.debug("Verifying PGP signature using gpg")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as gpg_homedir:
+        ctx = gpg.Context(home_dir=gpg_homedir)
+        try:
+            logger.debug("Importing GPG key")
+            assert callable(ctx.key_import)
+            result = ctx.key_import(key)
+        except Exception as e:
+            raise Exception("Unable to import GPG key") from e
+
+        if hasattr(result, "considered"):
+            _, result = ctx.verify(body, sig)
+            return result.signatures[0].status == 0
+    return False
+
+
 def verify_signature(key: bytes, sig: bytes, body: bytes) -> bool:
     """
     Verify the file signature (sig) using a public key (key)
@@ -62,19 +114,17 @@ def verify_signature(key: bytes, sig: bytes, body: bytes) -> bool:
     try:
         # PGP
         if key_header == "-----BEGIN PGP PUBLIC KEY BLOCK-----":
-            verified = False
-            with tempfile.TemporaryDirectory() as gpg_homedir:
-                ctx = gpg.Context(home_dir=gpg_homedir)
+            # Try pysequoia first if available
+            if HAS_PYSEQUOIA:
                 try:
-                    logger.debug("Importing GPG key")
-                    assert callable(ctx.key_import)
-                    result = ctx.key_import(key)
+                    verified = _verify_pgp_signature_pysequoia(key, sig, body)
                 except Exception as e:
-                    raise Exception("Unable to import GPG key") from e
+                    logger.debug("pysequoia verification failed, falling back to gpg: %s", e)
+                    verified = False
 
-                if hasattr(result, "considered"):
-                    _, result = ctx.verify(body, sig)
-                    verified = result.signatures[0].status == 0
+            # Fall back to gpg if pysequoia is not available or failed
+            if not verified and HAS_GPG:
+                verified = _verify_pgp_signature_gpg(key, sig, body)
 
         # OpenSSL
         elif key_header == "-----BEGIN PUBLIC KEY-----":
