@@ -44,6 +44,7 @@ class TestPersistableModelQueries(unittest.TestCase):
         db_manager._engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         db_manager._registry = registry()
         db_manager._service = "test"
+        db_manager._scoped_session = None  # Reset scoped_session for new engine
         # pylint: enable=protected-access
 
         # Process schema to create db_mapping
@@ -299,6 +300,7 @@ class TestPersistableModelWithAssociations(unittest.TestCase):
             db_manager._engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
             db_manager._registry = registry()
             db_manager._service = "test"
+            db_manager._scoped_session = None  # Reset scoped_session for new engine
         # pylint: enable=protected-access
 
         # Process schema for association models

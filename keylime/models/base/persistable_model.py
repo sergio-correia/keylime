@@ -197,9 +197,8 @@ class PersistableModel(BasicModel, metaclass=PersistableModelMeta):
         with db_manager.session_context() as session:
             results = cls._query(session, args, kwargs).first()
 
-        if results:
-            return cls(results)
-        else:
+            if results:
+                return cls(results)
             return None
 
     @classmethod
@@ -209,8 +208,7 @@ class PersistableModel(BasicModel, metaclass=PersistableModelMeta):
 
         with db_manager.session_context() as session:
             results = cls._query(session, args, kwargs).all()
-
-        return [cls(mapping_inst) for mapping_inst in results]
+            return [cls(mapping_inst) for mapping_inst in results]
 
     @classmethod
     def all_ids(cls, *args: Any, **kwargs: Any) -> Sequence[Any]:
@@ -224,8 +222,7 @@ class PersistableModel(BasicModel, metaclass=PersistableModelMeta):
 
         with db_manager.session_context() as session:
             results = cls._query(session, args, kwargs, subject=id_column).all()
-
-        return [getattr(row, cls.id_field.name) for row in results]
+            return [getattr(row, cls.id_field.name) for row in results]
 
     @classmethod
     def delete_all(cls, *args: Any, **kwargs: Any) -> None:

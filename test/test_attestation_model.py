@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import registry
 
 from keylime.models import db_manager
+from keylime.models.base import Integer, PersistableModel, String
 from keylime.models.verifier import Attestation, EvidenceItem, VerifierAgent
 from keylime.models.verifier.attestation import SystemInfo
 
@@ -28,6 +29,7 @@ class TestAttestationModel(unittest.TestCase):
         db_manager._engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         db_manager._registry = registry()
         db_manager._service = "test"
+        db_manager._scoped_session = None  # Reset scoped_session for new engine
         # pylint: enable=protected-access
 
         # Process schema for the models
@@ -962,6 +964,87 @@ class TestAttestationModel(unittest.TestCase):
         attestation.evidence_received_at = now
 
         self.assertFalse(attestation.ready_for_next_attestation)
+
+
+class TestGetWithAssociationsAfterSessionRemove(unittest.TestCase):
+    """Regression test: PersistableModel.get() must construct model objects
+    inside the session context so that lazy-loaded associations are accessible.
+
+    Before the fix, get() ran cls(results) AFTER the session context exited,
+    which called scoped_session.remove() and detached all ORM instances. The
+    subsequent lazy load of associations (e.g., EvidenceItem → Attestation)
+    then raised sqlalchemy.orm.exc.DetachedInstanceError.
+    """
+
+    def setUp(self):
+        # pylint: disable=protected-access
+        db_manager._engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        db_manager._registry = registry()
+        db_manager._service = "test"
+        db_manager._scoped_session = None
+        # pylint: enable=protected-access
+
+        # Define test models with a has_many association
+        class _Parent(PersistableModel):
+            @classmethod
+            def _schema(cls):
+                cls._persist_as("test_parents")
+                cls._id("parent_id", Integer)
+                cls._field("name", String(50))
+                cls._has_many("children", _Child)
+
+        class _Child(PersistableModel):
+            @classmethod
+            def _schema(cls):
+                cls._persist_as("test_children")
+                cls._belongs_to("parent", _Parent)
+                cls._field("parent_id", Integer, primary_key=True, refers_to="parent.parent_id")
+                cls._field("child_index", Integer, primary_key=True)
+                cls._field("value", String(50))
+
+        self.Parent = _Parent
+        self.Child = _Child
+
+        _Parent.process_schema()
+        _Child.process_schema()
+
+        db_manager.registry.metadata.create_all(db_manager.engine)
+
+    def _insert_test_data(self):
+        """Insert a parent with children."""
+        with db_manager.session_context() as session:
+            session.add(self.Parent.db_mapping(parent_id=1, name="test-parent"))
+
+        with db_manager.session_context() as session:
+            session.add(self.Child.db_mapping(parent_id=1, child_index=0, value="child-0"))
+            session.add(self.Child.db_mapping(parent_id=1, child_index=1, value="child-1"))
+
+    def test_get_with_associations_no_detached_error(self):
+        """get() must not raise DetachedInstanceError when loading associations.
+
+        Before the fix, PersistableModel.get() called cls(results) after the
+        session context exited, which triggered scoped_session.remove(). The
+        model constructor then tried to lazy-load associations on a detached
+        ORM instance, raising DetachedInstanceError.
+        """
+        self._insert_test_data()
+
+        # This would raise DetachedInstanceError before the fix
+        result = self.Parent.get(1)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.parent_id, 1)
+        self.assertEqual(result.name, "test-parent")
+
+    def test_all_with_associations_no_detached_error(self):
+        """all() must not raise DetachedInstanceError when loading associations."""
+        self._insert_test_data()
+
+        results = self.Parent.all()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].parent_id, 1)
 
 
 if __name__ == "__main__":

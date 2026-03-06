@@ -29,7 +29,7 @@ class DBManager:
         self._service: Optional[str] = None
         self._engine: Optional[Engine] = None
         self._registry = None
-        self._scoped_session = None
+        self._scoped_session: Optional[scoped_session] = None
 
     def make_engine(self, service: str) -> Engine:
         # Keep DB related stuff as it is, but read configuration from new
@@ -149,13 +149,15 @@ class DBManager:
         try:
             yield session
             session.commit()
-        except:
+        except Exception:
             session.rollback()
             raise
+        finally:
+            if self._scoped_session is not None:
+                self._scoped_session.remove()  # type: ignore[no-untyped-call]
 
     @contextmanager
-    def session_context_for(self, *record_and_record_sets: Any) -> Iterator[Session]:
-        session = self.session()
+    def session_context_for(self, *record_and_record_sets: Any, session: Session | None = None) -> Iterator[Session]:
         records = []
 
         for item in record_and_record_sets:
@@ -168,15 +170,28 @@ class DBManager:
             for record in item:
                 records.append(record)
 
+        if session:
+            yield session
+
+            for record in records:
+                record.commit_changes(persist=False)
+
+            return
+
+        session = self.session()
+
         try:
             yield session
             session.commit()
 
             for record in records:
                 record.commit_changes(persist=False)
-        except:
+        except Exception:
             session.rollback()
             raise
+        finally:
+            if self._scoped_session is not None:
+                self._scoped_session.remove()  # type: ignore[no-untyped-call]
 
 
 # Create a global DBManager which can be referenced from any module
