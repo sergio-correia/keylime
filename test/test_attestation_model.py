@@ -966,6 +966,34 @@ class TestAttestationModel(unittest.TestCase):
         self.assertFalse(attestation.ready_for_next_attestation)
 
 
+class TestVerifierAgentLatestAttestation(unittest.TestCase):
+    """Test that VerifierAgent.latest_attestation uses cached_property (not functools.cache)
+
+    The original @cache decorator on latest_attestation created a class-level
+    cache keyed by self, causing an unbounded memory leak. The fix uses
+    @cached_property which caches per-instance (freed when the instance is GC'd)
+    while still ensuring the same object is returned within a single request.
+    """
+
+    def test_latest_attestation_is_cached_property(self):
+        """Verify latest_attestation uses cached_property (per-instance, not class-level)"""
+        from functools import cached_property as cp  # pylint: disable=import-outside-toplevel
+
+        # Walk the MRO to find the class that defines latest_attestation
+        for klass in VerifierAgent.__mro__:
+            if "latest_attestation" in klass.__dict__:
+                self.assertIsInstance(klass.__dict__["latest_attestation"], cp)
+                return
+        self.fail("latest_attestation not found in MRO")
+
+    def test_latest_attestation_no_unbounded_cache(self):
+        """Verify the property has no functools.cache wrapper (which caused the leak)"""
+        descriptor = VerifierAgent.__dict__["latest_attestation"]
+        # @cache adds cache_info and __wrapped__; cached_property does not
+        self.assertFalse(hasattr(descriptor, "cache_info"))
+        self.assertFalse(hasattr(descriptor, "__wrapped__"))
+
+
 class TestGetWithAssociationsAfterSessionRemove(unittest.TestCase):
     """Regression test: PersistableModel.get() must construct model objects
     inside the session context so that lazy-loaded associations are accessible.

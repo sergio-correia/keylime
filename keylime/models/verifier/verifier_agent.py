@@ -1,6 +1,6 @@
 # pyright: reportAttributeAccessIssue=false
 # ORM model with dynamically-created attributes from metaclasses
-from functools import cache
+from functools import cached_property
 
 from keylime.models.base import *
 
@@ -96,8 +96,7 @@ class VerifierAgent(PersistableModel):
         # ------------------------------------------------------------------ #
         # TODO: remove above, based on feedback
 
-    @property
-    @cache  # pylint: disable=method-cache-max-size-none  # Intentional unbounded cache for ORM property
+    @cached_property
     def latest_attestation(self):
         # Lazy import to avoid circular dependency
         import keylime.models.verifier as verifier_models  # pylint: disable=import-outside-toplevel
