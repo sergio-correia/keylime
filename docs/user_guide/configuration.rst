@@ -425,6 +425,10 @@ Common Options (Both Models)
       - (empty)
       - 2.5
       - ``KEYLIME_VERIFIER_CERT_SUBJECT_ALTERNATIVE_NAMES``
+    * - ``shutdown_drain_timeout``
+      - ``10``
+      - 2.6
+      - ``KEYLIME_VERIFIER_SHUTDOWN_DRAIN_TIMEOUT``
 
 Pull Model Specific Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
