@@ -2705,8 +2705,39 @@ def get_agents_by_verifier_id(verifier_id: str) -> List[VerfierMain]:
 
 
 def main() -> None:
-    """Main method of the Cloud Verifier Server.  This method is encapsulated in a function for packaging to allow it to be
-    called as a function by an external program."""
+    """Main method of the Cloud Verifier Server.
+
+    This method is encapsulated in a function for packaging to allow it to
+    be called as a function by an external program.
+
+    MULTIPROCESSING + DATABASE PATTERN:
+
+    This verifier uses multiprocessing to run multiple worker processes.
+    To avoid database connection leaks:
+
+    1. The parent disposes its engine after querying agents and before
+       forking, so children inherit no pooled connections. This avoids
+       the close=True/close=False dilemma on inherited FDs (relevant for
+       PostgreSQL/MySQL where double-closing corrupts the parent's pool).
+
+    2. Workers call reset_verifier_config() + _initialize_verifier_config()
+       to clear inherited DB state (session manager, scoped_session, config
+       flag) and create a fresh engine with its own connection pool.
+
+    3. On shutdown, cooperative drain (shutdown.request_shutdown +
+       wait_for_drain) allows in-flight operations to complete, ensuring
+       session_context() finally blocks run naturally.
+
+    4. After the IOLoop stops, _session_manager.cleanup() closes any
+       session left by abandoned coroutines (drain timeout edge case),
+       and engine.dispose() closes idle pooled connections.
+
+    Note on asyncio.Event objects (_shutdown_event, _operations_drained):
+    These are created at module import time and inherited across fork.
+    They are safe because Python 3.10+ asyncio.Event binds to the current
+    event loop at first access, not at creation time. The parent must not
+    call shutdown.is_shutting_down() before forking workers.
+    """
 
     _initialize_verifier_config()
 
