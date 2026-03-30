@@ -977,5 +977,95 @@ class TestProcessGetStatus(unittest.TestCase):
         )
 
 
+class TestResetVerifierConfig(unittest.TestCase):
+    """Test reset_verifier_config() clears all inherited DB state."""
+
+    @patch("keylime.cloud_verifier_tornado.config")
+    def test_reset_clears_all_globals(self, _mock_config):
+        """Verify reset_verifier_config() clears engine, session manager, rmc, and flag."""
+        import keylime.cloud_verifier_tornado as cvt  # pylint: disable=import-outside-toplevel
+
+        mock_engine = MagicMock()
+        mock_session_manager = MagicMock()
+
+        cvt.engine = mock_engine
+        cvt._session_manager = mock_session_manager  # pylint: disable=protected-access
+        cvt.rmc = MagicMock()
+        cvt._verifier_config_initialized = True  # pylint: disable=protected-access
+
+        cvt.reset_verifier_config()
+
+        # Should clean up session before disposing engine
+        mock_session_manager.cleanup.assert_called_once()
+        mock_engine.dispose.assert_called_once()
+
+        # Should clear all globals
+        self.assertIsNone(cvt.engine)
+        self.assertIsNone(cvt._session_manager)  # pylint: disable=protected-access
+        self.assertIsNone(cvt.rmc)
+        self.assertFalse(cvt._verifier_config_initialized)  # pylint: disable=protected-access
+
+    @patch("keylime.cloud_verifier_tornado.config")
+    def test_reset_safe_when_engine_is_none(self, _mock_config):
+        """Verify reset_verifier_config() is safe when engine is already None."""
+        import keylime.cloud_verifier_tornado as cvt  # pylint: disable=import-outside-toplevel
+
+        cvt.engine = None
+        cvt._session_manager = None  # pylint: disable=protected-access
+        cvt.rmc = None
+        cvt._verifier_config_initialized = False  # pylint: disable=protected-access
+
+        # Should not raise
+        cvt.reset_verifier_config()
+
+        self.assertIsNone(cvt.engine)
+        self.assertFalse(cvt._verifier_config_initialized)  # pylint: disable=protected-access
+
+    @patch("keylime.cloud_verifier_tornado.config")
+    def test_reset_calls_cleanup_before_dispose(self, _mock_config):
+        """Verify cleanup() is called before engine.dispose() (ordering matters)."""
+        import keylime.cloud_verifier_tornado as cvt  # pylint: disable=import-outside-toplevel
+
+        call_order = []
+        mock_engine = MagicMock()
+        mock_engine.dispose.side_effect = lambda: call_order.append("dispose")
+        mock_session_manager = MagicMock()
+        mock_session_manager.cleanup.side_effect = lambda: call_order.append("cleanup")
+
+        cvt.engine = mock_engine
+        cvt._session_manager = mock_session_manager  # pylint: disable=protected-access
+        cvt._verifier_config_initialized = True  # pylint: disable=protected-access
+
+        cvt.reset_verifier_config()
+
+        self.assertEqual(call_order, ["cleanup", "dispose"])
+
+
+class TestSessionManagerCleanup(unittest.TestCase):
+    """Test SessionManager.cleanup() method."""
+
+    def test_cleanup_calls_scoped_session_remove(self):
+        """Verify cleanup() calls remove() on the scoped session."""
+        from keylime.db.keylime_db import SessionManager  # pylint: disable=import-outside-toplevel
+
+        sm = SessionManager()
+        mock_scoped_session = MagicMock()
+        sm._scoped_session = mock_scoped_session  # pylint: disable=protected-access
+
+        sm.cleanup()
+
+        mock_scoped_session.remove.assert_called_once()
+
+    def test_cleanup_safe_when_no_scoped_session(self):
+        """Verify cleanup() is safe when _scoped_session is None."""
+        from keylime.db.keylime_db import SessionManager  # pylint: disable=import-outside-toplevel
+
+        sm = SessionManager()
+        # _scoped_session is None by default
+
+        # Should not raise
+        sm.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

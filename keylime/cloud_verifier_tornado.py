@@ -126,6 +126,12 @@ def reset_verifier_config() -> None:
     """
     global engine, rmc, _session_manager, _verifier_config_initialized
 
+    # Clean up any inherited scoped session entry from the parent.
+    # threading.local state is inherited across fork, so if the parent
+    # had a session checked out, the child inherits that stale reference.
+    if _session_manager is not None:
+        _session_manager.cleanup()
+
     if engine:
         engine.dispose()
 
@@ -2761,8 +2767,19 @@ def main() -> None:
 
     def server_process(task_id: int, agents: List[VerfierMain]) -> None:
         logger.info("Starting server of process %s", task_id)
-        assert isinstance(engine, Engine)
-        engine.dispose()
+        # Clear all inherited DB state from parent process and re-initialize
+        # with fresh connections. The parent disposed its engine before forking
+        # (so no pooled connections were inherited), but we still need to reset
+        # the stale _session_manager, _scoped_session, and
+        # _verifier_config_initialized globals.
+        #
+        # Must run before server.start() and activate_agents() to ensure no
+        # request handler uses stale state.
+        # Note: _init_lock is process-local after fork (only one thread exists
+        # in the child at this point), so no cross-process contention.
+        reset_verifier_config()
+        _initialize_verifier_config()
+        assert isinstance(engine, Engine), "Engine not initialized after reset"
         server = tornado.httpserver.HTTPServer(app, ssl_options=ssl_ctx, max_buffer_size=max_upload_size)
         server.add_sockets(sockets)
 
@@ -2851,6 +2868,16 @@ def main() -> None:
         num_workers = tornado.process.cpu_count()
 
     agents = get_agents_by_verifier_id(verifier_id)
+
+    # Dispose parent's engine before forking workers. The parent no longer
+    # needs DB connections — it only manages child processes from here.
+    # This ensures children inherit no pooled connections, eliminating the
+    # close=True/close=False dilemma on inherited FDs (relevant for
+    # PostgreSQL/MySQL backends where double-closing a socket-based
+    # connection would corrupt the parent's pool).
+    if engine is not None:
+        engine.dispose()
+
     for task_id in range(0, num_workers):
         active_agents = [agents[i] for i in range(task_id, len(agents), num_workers)]
         process = multiprocessing.Process(target=server_process, args=(task_id, active_agents))
