@@ -115,6 +115,15 @@ class SessionManager:
             logger.error("Error creating SQL session manager %s", err)
         return cast(Session, self._scoped_session())
 
+    def cleanup(self) -> None:
+        """Remove scoped session entry, closing any checked-out connection.
+
+        Safe to call when no session is active (no-op). Call during shutdown
+        or before fork to ensure no connections leak.
+        """
+        if self._scoped_session is not None:
+            self._scoped_session.remove()  # type: ignore[no-untyped-call]
+
     @contextmanager
     def session_context(self, engine: Engine) -> Iterator[Session]:
         """
