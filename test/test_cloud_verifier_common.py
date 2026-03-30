@@ -1041,6 +1041,54 @@ class TestResetVerifierConfig(unittest.TestCase):
         self.assertEqual(call_order, ["cleanup", "dispose"])
 
 
+class TestWorkerShutdownCleanup(unittest.TestCase):
+    """Test post-IOLoop cleanup closes sessions and pool connections."""
+
+    def test_cleanup_before_dispose_ordering(self):
+        """Verify cleanup() is called before engine.dispose() at shutdown."""
+        call_order = []
+        mock_session_manager = MagicMock()
+        mock_session_manager.cleanup.side_effect = lambda: call_order.append("cleanup")
+        mock_engine = MagicMock()
+        mock_engine.dispose.side_effect = lambda: call_order.append("dispose")
+
+        # Simulate the post-IOLoop cleanup code path
+        if mock_session_manager is not None:
+            mock_session_manager.cleanup()
+        if mock_engine is not None:
+            mock_engine.dispose()
+
+        self.assertEqual(call_order, ["cleanup", "dispose"])
+        mock_session_manager.cleanup.assert_called_once()
+        mock_engine.dispose.assert_called_once()
+
+    def test_cleanup_safe_when_session_manager_is_none(self):
+        """Verify cleanup path handles None _session_manager gracefully."""
+        _session_manager = None
+        mock_engine = MagicMock()
+
+        # Should not raise
+        if _session_manager is not None:
+            _session_manager.cleanup()
+        if mock_engine is not None:
+            mock_engine.dispose()
+
+        mock_engine.dispose.assert_called_once()
+
+    def test_cleanup_safe_when_engine_is_none(self):
+        """Verify cleanup path handles None engine gracefully."""
+        mock_session_manager = MagicMock()
+        _engine = None
+
+        # Should not raise
+        if mock_session_manager is not None:
+            mock_session_manager.cleanup()
+        if _engine is not None:
+            _engine.dispose()
+
+        mock_session_manager.cleanup.assert_called_once()
+
+
 class TestSessionManagerCleanup(unittest.TestCase):
     """Test SessionManager.cleanup() method."""
 

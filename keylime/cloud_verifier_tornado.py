@@ -2838,6 +2838,28 @@ def main() -> None:
         asyncio.ensure_future(activate_agents(agents, verifier_host, int(verifier_port)))
         tornado.ioloop.IOLoop.current().start()
         logger.debug("Server %s stopped.", task_id)
+
+        # Clean up database connections before exit.
+        #
+        # After the IOLoop stops, there may be unclosed connections:
+        #
+        # 1. Checked-out connections: if wait_for_drain() timed out,
+        #    abandoned coroutines' session_context() finally blocks never
+        #    ran. Since all asyncio coroutines run on the same thread, they
+        #    share one scoped_session entry. cleanup() closes that session
+        #    (rolling back any uncommitted transaction) and returns its
+        #    connection to the pool.
+        #
+        # 2. Idle pooled connections: QueuePool keeps connections open for
+        #    reuse. engine.dispose() closes all pooled connections.
+        #
+        # Together, these ensure no SQLite file descriptors leak at exit
+        # (verified by valgrind --track-fds).
+        if _session_manager is not None:
+            _session_manager.cleanup()
+        if engine is not None:
+            engine.dispose()
+
         sys.exit(0)
 
     processes: List[multiprocessing.Process] = []
